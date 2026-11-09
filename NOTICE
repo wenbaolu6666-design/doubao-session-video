@@ -1,0 +1,7 @@
+This project's directory structure and command-line conventions were inspired
+by Rodert/silicogrove-video-skill (Apache-2.0). The Doubao web-session protocol
+implementation is an independent rewrite and does not include SilicoGrove API
+code.
+
+This is an unofficial project. It is not affiliated with, endorsed by, or
+sponsored by Doubao, ByteDance, or any related trademark holder.

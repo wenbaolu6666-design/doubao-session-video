@@ -1,0 +1,4 @@
+interface:
+  display_name: "Doubao Session Video"
+  short_description: "Generate Doubao videos with a signed-in session."
+  default_prompt: "Use $doubao-session-video to generate a video through my signed-in Doubao session."
