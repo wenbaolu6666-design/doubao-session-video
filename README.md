@@ -8,13 +8,13 @@ Doubao OAuth 插件配套的独立视频 Skill。插件仓库：
 这是一个以 [SilicoGrove Video Skill](https://github.com/Rodert/silicogrove-video-skill) 的
 目录结构、任务日志和命令体验为蓝本改造成的 **豆包会话视频 Skill**。
 
-它不再调用 SilicoGrove 或官方火山方舟 API，而是复用你已经登录的豆包网页/桌面会话，
-并通过豆包 agent 的视频创作流程生成：
+它不再调用 SilicoGrove 或官方火山方舟 API。视频生成被强制路由到本地
+CLIProxyAPI/CPA（默认 `http://127.0.0.1:8317/v1`），由 CPA 使用已登录的豆包账号：
 
-1. 读取豆包桌面客户端已登录的会话 Cookie；
-2. 提交 `/chat/completion` 的 agent 视频请求；
-3. 在同一条 SSE 流中接收视频结果和真实 MP4 地址；
-4. 下载 MP4，并保留不含敏感信息的 JSONL 任务日志。
+1. Skill 通过 CPA 的 `doubao-video` / `seedance-*` 模型提交请求；
+2. CPA 负责账号、额度、冷却和换号；
+3. CPA 返回最终 MP4 地址，并且本次调用会出现在软件请求记录中；
+4. Skill 下载 MP4，并保留不含敏感信息的 JSONL 任务日志。
 
 ## 适用范围
 
@@ -29,7 +29,20 @@ Doubao OAuth 插件配套的独立视频 Skill。插件仓库：
 
 ## 安装与配置
 
-### Windows：推荐直接导入桌面会话
+### 必选：配置本地 CPA 网关
+
+保持 CPA 运行在 `8317`，然后通过标准输入保存 API Key，避免把密钥写进命令参数：
+
+```powershell
+Get-Content -Raw .\cpa-api-key.txt | python .\scripts\doubao_session_video.py config --set-gateway-key-stdin
+python .\scripts\doubao_session_video.py config --set-gateway-url "http://127.0.0.1:8317/v1"
+python .\scripts\doubao_session_video.py config --show-status
+```
+
+`config --show-status` 应显示 `gateway_key_configured: true`。也可用环境变量
+`DOUBAO_GATEWAY_API_KEY` 和 `DOUBAO_GATEWAY_URL` 覆盖配置。
+
+### 可选：导入桌面会话（仅旧版 `status` 兼容）
 
 先登录豆包桌面客户端，然后：
 
@@ -46,7 +59,7 @@ python .\scripts\doubao_session_video.py config --import-desktop --user-data "C:
 
 会话保存在 `%APPDATA%\doubao-session-video\config.json`。
 
-### 从已有认证文件导入
+### 可选：从已有认证文件导入
 
 ```powershell
 python .\scripts\doubao_session_video.py config --import-auth "C:\path\to\doubao-auth.json"
@@ -65,7 +78,7 @@ python .\scripts\doubao_session_video.py config --import-auth "C:\path\to\doubao
 }
 ```
 
-### 通过标准输入保存 Cookie
+### 可选：通过标准输入保存 Cookie
 
 适合其他 Agent 在本机安全传递已提供的会话，不要把 Cookie 放进命令行参数：
 
@@ -91,7 +104,7 @@ Get-Content -Raw .\session.json | python .\scripts\doubao_session_video.py confi
 插件会在普通 chat completion 回复中返回最终 MP4 地址。模型名称选择会作为提示词
 偏好交给豆包 agent，实际可用模型、时长和分辨率由账号当前能力决定。
 
-### 直接运行 Skill 客户端
+### 通过 Skill CLI 生成（仍然强制走 CPA）
 
 ```powershell
 python .\scripts\doubao_session_video.py generate `

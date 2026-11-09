@@ -1,6 +1,6 @@
 ---
 name: doubao-session-video
-description: Generate text-to-video through the user's signed-in Doubao web session with an available Seedance model. Use when a user asks to create, render, or download a Doubao video without an official Ark API key.
+description: Generate text-to-video through the user's local CLIProxyAPI/CPA gateway and signed-in Doubao account. Use when a user asks to create, render, or download a Doubao video without an official Ark API key.
 ---
 
 # Doubao Session Video
@@ -9,14 +9,23 @@ Run the bundled client from this Skill's directory. Resolve `SKILL_DIR` as the
 directory containing this `SKILL.md`; do not use an absolute path from another
 machine.
 
-This Skill uses the user's existing Doubao web session, not the official
-Volcengine Ark API. It does not sign in, solve captchas, bypass quota, or create
-accounts. The user must already be signed in to the Doubao desktop client or
-provide an authenticated session file.
+Generation is forced through the local CLIProxyAPI/CPA gateway at
+`http://127.0.0.1:8317/v1` (override with `DOUBAO_GATEWAY_URL`). This makes every
+Skill generation appear in the host request history and lets CPA choose an
+account with available quota. It does not use the official Volcengine Ark API,
+sign in, solve captchas, bypass quota, or create accounts.
 
 ## Session workflow
 
-1. Run `config --show-status` first. If no session is saved and the host is
+1. Run `config --show-status` first. It must report
+   `gateway_key_configured: true`. Configure the CPA API key once without putting
+   it in a command argument:
+
+   ```bash
+   python "$SKILL_DIR/scripts/doubao_session_video.py" config --set-gateway-key-stdin
+   ```
+
+2. If a legacy status command is needed, import a Doubao session. If no session is saved and the host is
    Windows, run:
 
    ```bash
@@ -26,7 +35,7 @@ provide an authenticated session file.
    This reads the already signed-in Doubao desktop profile. It does not open a
    login page or print cookie values.
 
-2. If desktop import is unavailable, ask the user to create a local JSON file
+3. If desktop import is unavailable, ask the user to create a local JSON file
    containing an authenticated Doubao session and run:
 
    ```bash
@@ -43,7 +52,7 @@ provide an authenticated session file.
    accepted. Do not put cookies in a prompt, command-line argument, environment
    variable, repository file, or task output.
 
-3. When a new session is provided, replace the saved session even if one already
+4. When a new session is provided, replace the saved session even if one already
    exists; the old session may have expired.
 
 The client stores the session in the current user's configuration directory
@@ -99,9 +108,9 @@ The client creates a private JSONL task log in the output directory before every
 errors, but never cookies, prompts, raw responses, or remote URLs beyond the
 final result metadata. Return the log path with every request result.
 
-The current Doubao agent returns the finished video in the same streaming
-response. `generate` waits for that response, then downloads the MP4. The legacy
-`status TASK_ID` command remains available only for older async tasks:
+`generate` sends an OpenAI-compatible request to the local CPA gateway, waits for
+the completed video result, then downloads the MP4. The legacy `status TASK_ID`
+command remains available only for older direct-session async tasks:
 
 ```bash
 python "$SKILL_DIR/scripts/doubao_session_video.py" status TASK_ID --output-dir ./outputs
@@ -111,11 +120,13 @@ Add `--no-download` to retain only the returned URLs.
 
 ## Error handling
 
-Report only the bundled client's summarized error. Do not expose cookies, request
-URLs, raw HTTP bodies, proxy details, or local browser paths.
+Report only the bundled client's summarized error. Do not expose cookies, the
+CPA API key, request URLs, raw HTTP bodies, or local browser paths.
 
-- `sessionid` missing or an expired-session/gateway error: ask the user to sign in
-  to Doubao again, then rerun `config --import-desktop` or `config --import-auth`.
+- `CPA gateway API key is not configured`: run `config --set-gateway-key-stdin`.
+- Gateway connection failure: make sure CLIProxyAPI is running on port `8317`.
+- Legacy `status` session error: sign in to Doubao again, then rerun
+  `config --import-desktop` or `config --import-auth`.
 - `HTTP 401` or `HTTP 403`: the saved session is not authorized for video
   generation.
 - `HTTP 429`, quota text, or a verification challenge: tell the user to retry or

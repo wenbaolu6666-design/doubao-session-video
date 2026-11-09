@@ -88,6 +88,33 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(CLIENT_MODULE.ClientError):
             CLIENT_MODULE._coerce_session({"cookies": {"ttwid": "only"}})
 
+    def test_gateway_only_config_is_accepted(self):
+        session = CLIENT_MODULE._coerce_session(
+            {"gateway_url": "http://127.0.0.1:8317/v1", "gateway_api_key": "test-key"}
+        )
+        self.assertEqual(session["cookies"], {})
+        self.assertEqual(session["gateway_url"], "http://127.0.0.1:8317/v1")
+        self.assertEqual(session["gateway_api_key"], "test-key")
+
+    def test_parse_gateway_video_text(self):
+        task_id, videos, answer = CLIENT_MODULE.parse_gateway_video_text(
+            "视频生成完成。\n\n视频: https://cdn.example/video.mp4\n"
+            "封面: https://cdn.example/cover.jpg\n尺寸: 1280x720\n\n任务 ID: task-9"
+        )
+        self.assertEqual(task_id, "task-9")
+        self.assertEqual(answer.startswith("视频生成完成。"), True)
+        self.assertEqual(videos[0]["video_url"], "https://cdn.example/video.mp4")
+        self.assertEqual(videos[0]["cover_url"], "https://cdn.example/cover.jpg")
+        self.assertEqual(videos[0]["width"], 1280)
+        self.assertEqual(videos[0]["height"], 720)
+
+    def test_gateway_prompt_forces_execution(self):
+        prompt = CLIENT_MODULE._gateway_prompt("rain", "9:16", "5 秒", "seedance-2.5", "slow push")
+        self.assertIn("已确认执行", prompt)
+        self.assertIn("Seedance 2.5", prompt)
+        self.assertIn("9:16", prompt)
+        self.assertIn("slow push", prompt)
+
     def test_video_payload_uses_agent_mode(self):
         payload = CLIENT_MODULE.build_video_payload("a running dog", "9:16", "5 秒", "seedance-2.0-mini")
         self.assertEqual(payload["client_meta"]["bot_id"], CLIENT_MODULE.VIDEO_AGENT_BOT_ID)

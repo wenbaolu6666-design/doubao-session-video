@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Portable Doubao web-session client for video generation.
+"""Portable Doubao video client routed through local CLIProxyAPI.
 
-The client intentionally uses only the user's existing signed-in Doubao web
-session. It does not perform login, solve captchas, or accept an API key.
+Generation always goes through the local CPA gateway so every request appears in
+the host request history. A saved Doubao session remains supported for legacy
+status recovery only.
 """
 
 from __future__ import annotations
@@ -41,6 +42,9 @@ CHROME_UA = (
 DEFAULT_RATIO = "16:9"
 SUPPORTED_RATIOS = {"1:1", "16:9", "9:16"}
 DEFAULT_TIMEOUT_SECONDS = 600
+DEFAULT_GATEWAY_URL = "http://127.0.0.1:8317/v1"
+GATEWAY_URL_ENV = "DOUBAO_GATEWAY_URL"
+GATEWAY_KEY_ENV = "DOUBAO_GATEWAY_API_KEY"
 VIDEO_AGENT_BOT_ID = "7338286299411103781"
 VIDEO_AGENT_MODEL_ID = "9"
 VIDEO_AGENT_MODE_ID = "3"
@@ -143,6 +147,8 @@ def _coerce_session(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         fail("The session must be a JSON object or a Cookie header string.")
 
+    gateway_url = str(raw.get("gateway_url") or "").strip()
+    gateway_api_key = str(raw.get("gateway_api_key") or "").strip()
     candidate = raw.get("cookies")
     if candidate is None and isinstance(raw.get("Cookie"), str):
         candidate = parse_cookie_header(raw["Cookie"])
@@ -150,14 +156,16 @@ def _coerce_session(raw: Any) -> dict[str, Any]:
         candidate = parse_cookie_header(raw["cookie"])
     if candidate is None and isinstance(raw.get("sessionid"), str):
         candidate = {"sessionid": raw["sessionid"]}
+    if candidate is None and (gateway_url or gateway_api_key):
+        candidate = {}
     if candidate is None and all(isinstance(value, str) for value in raw.values()):
         candidate = raw
     if not isinstance(candidate, dict):
         fail("The session JSON must contain a cookies object.")
 
     cookies = {str(name).strip(): str(value).strip() for name, value in candidate.items() if str(name).strip()}
-    if not cookies.get("sessionid"):
-        fail("The session does not contain a sessionid cookie.")
+    if not cookies.get("sessionid") and not gateway_api_key:
+        fail("The session does not contain a sessionid cookie and no gateway API key is configured.")
 
     session: dict[str, Any] = {
         "cookies": cookies,
@@ -167,6 +175,10 @@ def _coerce_session(raw: Any) -> dict[str, Any]:
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             session[key] = value.strip()
+    if gateway_url:
+        session["gateway_url"] = gateway_url
+    if gateway_api_key:
+        session["gateway_api_key"] = gateway_api_key
     return session
 
 
@@ -225,7 +237,7 @@ def save_session(session: dict[str, Any]) -> None:
 
 def _merge_saved_session(session: dict[str, Any]) -> dict[str, Any]:
     previous = load_session(required=False) or {}
-    for key in ("device_id", "web_id", "fp"):
+    for key in ("device_id", "web_id", "fp", "gateway_url", "gateway_api_key"):
         if not session.get(key) and previous.get(key):
             session[key] = previous[key]
     for key, value in new_identity().items():
@@ -247,6 +259,36 @@ def import_session_file(path: str) -> None:
     session = _merge_saved_session(_coerce_session(raw))
     save_session(session)
     print(f"Doubao session imported securely ({len(session['cookies'])} cookies).")
+
+
+def _gateway_config_session() -> dict[str, Any]:
+    session = load_session(required=False)
+    if session is None:
+        session = {"cookies": {}, "label": "CPA gateway"}
+    for key, value in new_identity().items():
+        session.setdefault(key, value)
+    return session
+
+
+def set_gateway_url(value: str) -> None:
+    url = value.strip().rstrip("/")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        fail("Gateway URL must be an absolute HTTP(S) URL.")
+    session = _gateway_config_session()
+    session["gateway_url"] = url
+    save_session(session)
+    print(f"CPA gateway URL saved: {url}")
+
+
+def set_gateway_key_from_stdin() -> None:
+    key = sys.stdin.read().strip()
+    if not key:
+        fail("The gateway API key is empty.")
+    session = _gateway_config_session()
+    session["gateway_api_key"] = key
+    save_session(session)
+    print("CPA gateway API key saved securely.")
 
 
 class _DataBlob(ctypes.Structure):
@@ -410,7 +452,18 @@ def import_desktop_session(user_data: str | None = None) -> None:
 def config_status() -> None:
     session = load_session(required=False)
     if session is None:
-        print(f"not configured\npath: {config_path()}")
+        print(
+            json.dumps(
+                {
+                    "configured": False,
+                    "path": str(config_path()),
+                    "gateway_url": gateway_url({}),
+                    "gateway_key_configured": bool(gateway_api_key({})),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
     print(
         json.dumps(
@@ -421,6 +474,8 @@ def config_status() -> None:
                 "cookies": len(session["cookies"]),
                 "device_id": session.get("device_id", ""),
                 "web_id": session.get("web_id", ""),
+                "gateway_url": gateway_url(session),
+                "gateway_key_configured": bool(gateway_api_key(session)),
             },
             ensure_ascii=False,
             indent=2,
@@ -430,6 +485,15 @@ def config_status() -> None:
 
 def cookie_header(cookies: dict[str, str]) -> str:
     return "; ".join(f"{name}={cookies[name]}" for name in sorted(cookies) if cookies[name])
+
+
+def gateway_url(session: dict[str, Any]) -> str:
+    value = os.environ.get(GATEWAY_URL_ENV, "").strip() or str(session.get("gateway_url") or "").strip()
+    return (value or DEFAULT_GATEWAY_URL).rstrip("/")
+
+
+def gateway_api_key(session: dict[str, Any]) -> str:
+    return os.environ.get(GATEWAY_KEY_ENV, "").strip() or str(session.get("gateway_api_key") or "").strip()
 
 
 def security_params(session: dict[str, Any]) -> dict[str, str]:
@@ -527,6 +591,111 @@ def _parse_json_response(status: int, text: str) -> dict[str, Any]:
     if body.get("code") not in (None, 0):
         fail(f"Doubao error {body.get('code')}: {body.get('msg') or body.get('message') or 'unknown error'}")
     return body
+
+
+def _gateway_prompt(prompt: str, ratio: str, duration: str, model: str, camera_movement: str) -> str:
+    parts = ["[已确认执行，请直接生成，不要再次询问参数。]"]
+    instruction = model_instruction(model)
+    if instruction:
+        parts.append(instruction)
+    parts.append(f"画面比例：{ratio}")
+    if duration:
+        parts.append(f"视频时长：{duration}")
+    if camera_movement:
+        parts.append(f"镜头运动：{camera_movement}")
+    parts.append(f"画面描述：{prompt}")
+    return "\n".join(parts)
+
+
+def gateway_chat(
+    session: dict[str, Any],
+    prompt: str,
+    ratio: str,
+    duration: str,
+    model: str,
+    camera_movement: str,
+    timeout: float,
+) -> str:
+    key = gateway_api_key(session)
+    if not key:
+        fail(
+            "The CPA gateway API key is not configured. Set "
+            f"{GATEWAY_KEY_ENV}, or run `config --set-gateway-key-stdin`."
+        )
+    body: dict[str, Any] = {
+        "model": canonical_model(model),
+        "stream": False,
+        "confirm": True,
+        "ratio": ratio,
+        "messages": [
+            {
+                "role": "user",
+                "content": _gateway_prompt(prompt, ratio, duration, model, camera_movement),
+            }
+        ],
+    }
+    seconds = re.search(r"\d+", duration or "")
+    if seconds:
+        body["seconds"] = int(seconds.group(0))
+    request = urllib.request.Request(
+        gateway_url(session) + "/chat/completions",
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + key,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "doubao-session-video/2.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+            status = int(getattr(response, "status", 200))
+    except urllib.error.HTTPError as exc:
+        detail = _decode_body(exc.read())
+        fail(f"CPA gateway returned HTTP {exc.code}: {detail[:600]}")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        fail(f"Cannot reach the CPA gateway at {gateway_url(session)}: {exc}")
+    payload = _parse_json_response(status, _decode_body(raw))
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        fail("CPA gateway returned no completion choices.")
+    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        fail("CPA gateway returned an empty video result.")
+    return content.strip()
+
+
+def parse_gateway_video_text(text: str) -> tuple[str, list[dict[str, Any]], str]:
+    task_id = ""
+    videos: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line.startswith("视频:"):
+            url = line.split(":", 1)[1].strip()
+            if url.startswith("http://") or url.startswith("https://"):
+                current = {"video_url": url}
+                videos.append(current)
+            continue
+        if current is None:
+            continue
+        if line.startswith("封面:"):
+            cover = line.split(":", 1)[1].strip()
+            if cover.startswith("http://") or cover.startswith("https://"):
+                current["cover_url"] = cover
+            continue
+        if line.startswith("尺寸:"):
+            match = re.search(r"(\d+)\s*[xX×]\s*(\d+)", line)
+            if match:
+                current["width"] = int(match.group(1))
+                current["height"] = int(match.group(2))
+            continue
+        if line.startswith("任务 ID:"):
+            task_id = line.split(":", 1)[1].strip()
+    return task_id, videos, text
 
 
 def _multipart_body(field_name: str, filename: str, content_type: str, payload: bytes, extra: dict[str, str]) -> tuple[bytes, str]:
@@ -1148,18 +1317,25 @@ def generate(args: argparse.Namespace) -> None:
         fail("--prompt cannot be empty.")
     if args.image:
         fail("--image is not supported by the current Doubao agent video flow.")
-    session = load_session()
-    assert session is not None
+    session = load_session(required=False) or {}
     duration = (args.seconds or "").strip()
     if not duration:
         match = re.search(r"(\d{1,2})\s*(秒|s|sec|seconds)", args.prompt, re.IGNORECASE)
         if match:
             duration = f"{match.group(1)} 秒"
-    payload = build_video_payload(args.prompt, ratio, duration, model, args.camera_movement)
     if args.dry_run:
         print(
             json.dumps(
-                {"model": model, "label": model_label(model), "ratio": ratio, "duration": duration, "payload": payload},
+                {
+                    "mode": "cpa-gateway",
+                    "gateway_url": gateway_url(session),
+                    "gateway_key_configured": bool(gateway_api_key(session)),
+                    "model": model,
+                    "label": model_label(model),
+                    "ratio": ratio,
+                    "duration": duration,
+                    "prompt": _gateway_prompt(args.prompt, ratio, duration, model, args.camera_movement),
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -1170,7 +1346,16 @@ def generate(args: argparse.Namespace) -> None:
     ACTIVE_TASK_LOG = task_log
     print(f"Task log: {task_log.path}")
     task_log.event("request_validated", model=model, ratio=ratio, duration=duration)
-    task_id, videos, answer = submit_video(session, payload, args.request_timeout)
+    text = gateway_chat(
+        session,
+        args.prompt,
+        ratio,
+        duration,
+        model,
+        args.camera_movement,
+        args.request_timeout,
+    )
+    task_id, videos, answer = parse_gateway_video_text(text)
     if task_id:
         task_log.event("task_submitted", task_id=task_id)
     if not videos:
@@ -1225,6 +1410,8 @@ def build_parser() -> argparse.ArgumentParser:
     actions.add_argument("--set-session-stdin", action="store_true")
     actions.add_argument("--import-auth", metavar="PATH")
     actions.add_argument("--import-desktop", action="store_true")
+    actions.add_argument("--set-gateway-url", metavar="URL")
+    actions.add_argument("--set-gateway-key-stdin", action="store_true")
     actions.add_argument("--clear", action="store_true")
     config.add_argument("--user-data", help="Doubao desktop 'User Data' directory")
 
@@ -1264,6 +1451,10 @@ def main(argv: list[str] | None = None) -> int:
                 import_session_file(args.import_auth)
             elif args.import_desktop:
                 import_desktop_session(args.user_data)
+            elif args.set_gateway_url:
+                set_gateway_url(args.set_gateway_url)
+            elif args.set_gateway_key_stdin:
+                set_gateway_key_from_stdin()
             elif args.clear:
                 path = config_path()
                 if path.exists():
